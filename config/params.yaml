@@ -1,0 +1,5 @@
+autonomous_rover_brain:
+  ros__parameters:
+    model: "google/gemini-2.0-flash-lite"
+    max_tokens: 1024
+    temperature: 0.7

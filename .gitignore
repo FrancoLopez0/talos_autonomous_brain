@@ -1,0 +1,25 @@
+# ROS 2 build artifacts
+build/
+install/
+log/
+
+# Colcon & Ament specific
+COLCON_IGNORE
+AMENT_IGNORE
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Editor & OS files
+.vscode/
+.idea/
+.project
+.cproject
+*.user
+.DS_Store
+
+# C++ / CMake artifacts (if not using colcon)
+CMakeLists.txt.user
