@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from autonomous_rover_brain.tools.ros2_service_tool import SetWheelPositionTool
 from ament_index_python.packages import get_package_share_directory
 import os
+import threading
 
 
 def read_prompt(file_path):
@@ -40,17 +41,13 @@ class LangchainNode(Node):
 
         self.system_prompt = SystemMessage(read_prompt(file_path))
 
-        print("=" * 20)
-        print(ia_model)
-        print(max_tokens)
-        print(temperature)
-        print("=" * 20)
+        self.messages = [self.system_prompt]
 
         self.set_wheel_position = SetWheelPositionTool(
             node=self, service_name="talos/set_wheel_position"
         )
 
-        tools = [self.set_wheel_position._run]
+        tools = [self.set_wheel_position]
 
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
@@ -76,25 +73,31 @@ class LangchainNode(Node):
         prompt_text = msg.data
         self.get_logger().info(f"Recibido prompt: '{prompt_text}'")
 
+        thread = threading.Thread(target=self._process_llm, args=(prompt_text,))
+        thread.start()
+
+    def _process_llm(self, prompt_text):
+        """Esta función corre en un hilo separado y no bloquea a ROS 2"""
         try:
-            messages = [self.system_prompt, HumanMessage(content=prompt_text)]
-            response = self.agent.invoke({"messages": messages})
+            self.messages.append(HumanMessage(content=prompt_text))
 
-            self.get_logger().info(response)
+            response = self.agent.invoke({"messages": self.messages})
 
-            for tool_call in response.tool_calls:
-                self.get_logger().info(f"Tool: {tool_call['name']}")
-                self.get_logger().info(f"Args: {tool_call['args']}")
-                self.get_logger().info(f"ID: {tool_call['id']}")
+            if "tool_call" in response:
+                for tool_call in response.tool_calls:
+                    self.get_logger().info(
+                        f"Tool: {tool_call['name']} | Args: {tool_call['args']}"
+                    )
 
-            self.get_logger().info(
-                f"Respuesta publicada: '{response['messages'][-1].content}...'"
-            )
+            ai_message = response["messages"][-1]
+
+            self.messages.append(ai_message)
+
+            self.get_logger().info(f"Respuesta publicada: '{ai_message.content}'")
 
             response_msg = String()
-            response_msg.data = response["messages"][-1].content
+            response_msg.data = ai_message.content
             self.publisher_.publish(response_msg)
-
 
         except Exception as e:
             self.get_logger().error(f"Error procesando con Langchain: {e}")
