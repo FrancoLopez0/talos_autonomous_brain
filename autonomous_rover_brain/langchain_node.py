@@ -3,9 +3,15 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from langchain_openrouter import ChatOpenRouter
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from autonomous_rover_brain.tools.ros2_service_tool import SetWheelPositionTool
+from ament_index_python.packages import get_package_share_directory
 import os
+
+
+def read_prompt(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 class LangchainNode(Node):
@@ -28,13 +34,21 @@ class LangchainNode(Node):
 
         temperature = 0.7
 
+        package_share_dir = get_package_share_directory("autonomous_rover_brain")
+
+        file_path = os.path.join(package_share_dir, "config/prompts", "system.md")
+
+        self.system_prompt = SystemMessage(read_prompt(file_path))
+
         print("=" * 20)
         print(ia_model)
         print(max_tokens)
         print(temperature)
         print("=" * 20)
 
-        self.set_wheel_position = SetWheelPositionTool(node=self)
+        self.set_wheel_position = SetWheelPositionTool(
+            node=self, service_name="talos/set_wheel_position"
+        )
 
         tools = [self.set_wheel_position._run]
 
@@ -63,14 +77,24 @@ class LangchainNode(Node):
         self.get_logger().info(f"Recibido prompt: '{prompt_text}'")
 
         try:
-            messages = [HumanMessage(content=prompt_text)]
+            messages = [self.system_prompt, HumanMessage(content=prompt_text)]
             response = self.agent.invoke({"messages": messages})
+
+            self.get_logger().info(response)
+
+            for tool_call in response.tool_calls:
+                self.get_logger().info(f"Tool: {tool_call['name']}")
+                self.get_logger().info(f"Args: {tool_call['args']}")
+                self.get_logger().info(f"ID: {tool_call['id']}")
+
+            self.get_logger().info(
+                f"Respuesta publicada: '{response['messages'][-1].content}...'"
+            )
 
             response_msg = String()
             response_msg.data = response["messages"][-1].content
             self.publisher_.publish(response_msg)
 
-            self.get_logger().info(f"Respuesta publicada: '{response["messages"][-1].content}...'")
 
         except Exception as e:
             self.get_logger().error(f"Error procesando con Langchain: {e}")
