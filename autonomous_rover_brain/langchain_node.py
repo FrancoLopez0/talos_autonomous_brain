@@ -15,25 +15,23 @@ def read_prompt(file_path):
         return f.read()
 
 
+IA_MODEL = "google/gemini-2.5-flash"
+MAX_TOKENS = 1024
+TEMPERATURE = 0.7
+MAX_RETRIES = 0
+
+TOPIC_PROMPT = "/llm_prompt"
+TOPIC_PUBLISH = "/llm_response"
+
+
 class LangchainNode(Node):
     def __init__(self):
         super().__init__("langchain_node")
 
         self.subscription = self.create_subscription(
-            String, "/llm_prompt", self.prompt_callback, 10
+            String, TOPIC_PROMPT, self.prompt_callback, 10
         )
-        self.publisher_ = self.create_publisher(String, "/llm_response", 10)
-
-        self.declare_parameter("model", "google/gemini-2.5-flash")
-        self.declare_parameter("max_tokens", 1024)
-
-        ia_model = self.get_parameter("model").get_parameter_value().string_value
-
-        max_tokens = (
-            self.get_parameter("max_tokens").get_parameter_value().integer_value
-        )
-
-        temperature = 0.7
+        self.publisher_ = self.create_publisher(String, TOPIC_PUBLISH, 10)
 
         package_share_dir = get_package_share_directory("autonomous_rover_brain")
 
@@ -58,10 +56,10 @@ class LangchainNode(Node):
         self.get_logger().info("Inicializando modelo Langchain (OpenAI)...")
 
         self.llm = ChatOpenRouter(
-            model=ia_model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            max_retries=0,
+            model=IA_MODEL,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            max_retries=MAX_RETRIES,
         )
         self.agent = create_agent(model=self.llm, tools=tools)
 
@@ -77,7 +75,6 @@ class LangchainNode(Node):
         thread.start()
 
     def _process_llm(self, prompt_text):
-        """Esta función corre en un hilo separado y no bloquea a ROS 2"""
         try:
             self.messages.append(HumanMessage(content=prompt_text))
 
