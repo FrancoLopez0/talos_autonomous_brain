@@ -5,3 +5,5 @@ colcon build
 source /opt/ros/jazzy/setup.bash
 
 colcon build --packages-select robot_interfaces --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+
+ros2 run rqt_console rqt_console

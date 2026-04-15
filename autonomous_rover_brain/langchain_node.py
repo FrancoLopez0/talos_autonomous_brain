@@ -27,8 +27,9 @@ MAX_RETRIES = 0
 TOPIC_PROMPT = "/llm_prompt"
 TOPIC_PUBLISH = "/llm_response"
 
-TOPIC_STATE = "/wheel_position_state"
+TOPIC_STATE = "/motor/status"
 
+SERVICE_SET_POSITION = "motor/set_position"
 
 class WheelState(BaseModel):
     wheel_id: str
@@ -52,7 +53,7 @@ wheel_state = WheelState(
 
 
 def update_wheel_state(msg: WheelPositionState):
-    wheel_state = msg
+    wheel_state.position_deg = msg.position_deg
 
 
 @tool
@@ -83,7 +84,7 @@ class LangchainNode(Node):
         self.messages = [self.system_prompt]
 
         self.set_wheel_position = SetWheelPositionTool(
-            node=self, service_name="talos/set_wheel_position"
+            node=self, service_name=SERVICE_SET_POSITION
         )
 
         tools = [self.set_wheel_position, calculate, get_wheel_state]
@@ -106,6 +107,11 @@ class LangchainNode(Node):
 
         self.get_logger().info(
             "Nodo Langchain inicializado y esperando prompts en /llm_prompt."
+        )
+
+    def test_update_wheel_state(self, msg):
+        self.get_logger().info(
+            f"Topic:{msg.position_deg}"
         )
 
     def prompt_callback(self, msg):
