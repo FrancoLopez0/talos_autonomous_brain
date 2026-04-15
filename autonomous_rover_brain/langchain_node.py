@@ -11,8 +11,10 @@ import os
 import threading
 from pydantic import BaseModel
 from robot_interfaces.msg import WheelPositionState
+from robot_interfaces.srv import Chat
 from langchain.tools import tool
-
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 
 def read_prompt(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
@@ -30,6 +32,7 @@ TOPIC_PUBLISH = "/llm_response"
 TOPIC_STATE = "/motor/status"
 
 SERVICE_SET_POSITION = "motor/set_position"
+
 
 class WheelState(BaseModel):
     wheel_id: str
@@ -66,6 +69,8 @@ class LangchainNode(Node):
     def __init__(self):
         super().__init__("langchain_node")
 
+        self.group = ReentrantCallbackGroup()
+
         self.subscription = self.create_subscription(
             String, TOPIC_PROMPT, self.prompt_callback, 10
         )
@@ -73,6 +78,13 @@ class LangchainNode(Node):
 
         self.wheel_state_topic = self.create_subscription(
             WheelPositionState, TOPIC_STATE, update_wheel_state, 10
+        )
+
+        self.chat = self.create_service(
+            Chat,
+            "/chat",
+            self.chat_call,
+            callback_group=self.group,
         )
 
         package_share_dir = get_package_share_directory("autonomous_rover_brain")
@@ -109,10 +121,36 @@ class LangchainNode(Node):
             "Nodo Langchain inicializado y esperando prompts en /llm_prompt."
         )
 
+    def chat_call(
+        self, request, response
+    ):  # Es buena práctica llamarlo 'request' en servicios, no 'msg'
+        user_text = request.prompt
+
+        self.messages.append(HumanMessage(content=user_text))
+
+        r = self.agent.invoke({"messages": self.messages})
+
+        ai_message = r["messages"][-1]
+
+        if hasattr(ai_message, "tool_calls") and ai_message.tool_calls:
+            for tool_call in ai_message.tool_calls:
+                self.get_logger().info(
+                    f"Tool: {tool_call.get('name')} | Args: {tool_call.get('args')}"
+                )
+
+        if ai_message.content:
+            response.reply = str(ai_message.content)
+        else:
+            response.reply = (
+                f"Ejecutando herramienta: {ai_message.tool_calls[0]['name']}..."
+            )
+
+        self.messages.append(ai_message)
+
+        return response
+
     def test_update_wheel_state(self, msg):
-        self.get_logger().info(
-            f"Topic:{msg.position_deg}"
-        )
+        self.get_logger().info(f"Topic:{msg.position_deg}")
 
     def prompt_callback(self, msg):
         prompt_text = msg.data
@@ -151,14 +189,17 @@ def main(args=None):
     rclpy.init(args=args)
     node = LangchainNode()
 
+    executor = MultiThreadedExecutor(num_threads=4) # Podés ajustar la cantidad de hilos
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
