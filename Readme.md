@@ -4,3 +4,4 @@ ros2 topic echo /llm_response
 colcon build
 source /opt/ros/jazzy/setup.bash
 
+colcon build --packages-select robot_interfaces --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3

@@ -3,9 +3,62 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from langchain_openrouter import ChatOpenRouter
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from autonomous_rover_brain.tools.ros2_service_tool import SetWheelPositionTool
+from autonomous_rover_brain.tools.calculate import calculate
+from ament_index_python.packages import get_package_share_directory
 import os
+import threading
+from pydantic import BaseModel
+from robot_interfaces.msg import WheelPositionState
+from langchain.tools import tool
+
+
+def read_prompt(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+IA_MODEL = "google/gemini-2.5-flash"
+MAX_TOKENS = 1024
+TEMPERATURE = 0.7
+MAX_RETRIES = 0
+
+TOPIC_PROMPT = "/llm_prompt"
+TOPIC_PUBLISH = "/llm_response"
+
+TOPIC_STATE = "/wheel_position_state"
+
+
+class WheelState(BaseModel):
+    wheel_id: str
+    position_deg: float
+    position_def_rel: float
+    set_point_def: float
+    pid_out: float
+    duty_cycle: float
+    is_online: bool
+
+
+wheel_state = WheelState(
+    wheel_id=" ",
+    position_deg=0.0,
+    position_def_rel=0.0,
+    set_point_def=0.0,
+    pid_out=0.0,
+    duty_cycle=0.0,
+    is_online=False,
+)
+
+
+def update_wheel_state(msg: WheelPositionState):
+    wheel_state = msg
+
+
+@tool
+def get_wheel_state() -> String:
+    """Consulta el estado actual del motor"""
+    return f"Estado actual: {wheel_state}"
 
 
 class LangchainNode(Node):
@@ -13,30 +66,27 @@ class LangchainNode(Node):
         super().__init__("langchain_node")
 
         self.subscription = self.create_subscription(
-            String, "/llm_prompt", self.prompt_callback, 10
+            String, TOPIC_PROMPT, self.prompt_callback, 10
         )
-        self.publisher_ = self.create_publisher(String, "/llm_response", 10)
+        self.publisher_ = self.create_publisher(String, TOPIC_PUBLISH, 10)
 
-        self.declare_parameter("model", "google/gemini-2.5-flash")
-        self.declare_parameter("max_tokens", 1024)
-
-        ia_model = self.get_parameter("model").get_parameter_value().string_value
-
-        max_tokens = (
-            self.get_parameter("max_tokens").get_parameter_value().integer_value
+        self.wheel_state_topic = self.create_subscription(
+            WheelPositionState, TOPIC_STATE, update_wheel_state, 10
         )
 
-        temperature = 0.7
+        package_share_dir = get_package_share_directory("autonomous_rover_brain")
 
-        print("=" * 20)
-        print(ia_model)
-        print(max_tokens)
-        print(temperature)
-        print("=" * 20)
+        file_path = os.path.join(package_share_dir, "config/prompts", "system.md")
 
-        self.set_wheel_position = SetWheelPositionTool(node=self)
+        self.system_prompt = SystemMessage(read_prompt(file_path))
 
-        tools = [self.set_wheel_position._run]
+        self.messages = [self.system_prompt]
+
+        self.set_wheel_position = SetWheelPositionTool(
+            node=self, service_name="talos/set_wheel_position"
+        )
+
+        tools = [self.set_wheel_position, calculate, get_wheel_state]
 
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
@@ -47,10 +97,10 @@ class LangchainNode(Node):
         self.get_logger().info("Inicializando modelo Langchain (OpenAI)...")
 
         self.llm = ChatOpenRouter(
-            model=ia_model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            max_retries=0,
+            model=IA_MODEL,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            max_retries=MAX_RETRIES,
         )
         self.agent = create_agent(model=self.llm, tools=tools)
 
@@ -62,15 +112,30 @@ class LangchainNode(Node):
         prompt_text = msg.data
         self.get_logger().info(f"Recibido prompt: '{prompt_text}'")
 
+        thread = threading.Thread(target=self._process_llm, args=(prompt_text,))
+        thread.start()
+
+    def _process_llm(self, prompt_text):
         try:
-            messages = [HumanMessage(content=prompt_text)]
-            response = self.agent.invoke({"messages": messages})
+            self.messages.append(HumanMessage(content=prompt_text))
+
+            response = self.agent.invoke({"messages": self.messages})
+
+            if "tool_call" in response:
+                for tool_call in response.tool_calls:
+                    self.get_logger().info(
+                        f"Tool: {tool_call['name']} | Args: {tool_call['args']}"
+                    )
+
+            ai_message = response["messages"][-1]
+
+            self.messages.append(ai_message)
+
+            self.get_logger().info(f"Respuesta publicada: '{ai_message.content}'")
 
             response_msg = String()
-            response_msg.data = response["messages"][-1].content
+            response_msg.data = ai_message.content
             self.publisher_.publish(response_msg)
-
-            self.get_logger().info(f"Respuesta publicada: '{response["messages"][-1].content}...'")
 
         except Exception as e:
             self.get_logger().error(f"Error procesando con Langchain: {e}")

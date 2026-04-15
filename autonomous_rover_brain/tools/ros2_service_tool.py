@@ -87,26 +87,29 @@ class SetWheelVelocityTool(BaseTool):
 class SetWheelPositionTool(BaseTool):
     name: str = "set_wheel_position"
     description: str = "Ajusta la posicion angular de una rueda específica del rover."
-
     args_schema: Type[BaseModel] = SetWheelPositionSchema
-
     node: Any = Field(exclude=True)
-    service_name: str = "/set_wheel_position"  # Topic por defecto
+    service_name: str = "/set_wheel_position"
 
     def _run(self, wheel_id: str, position_deg: float) -> str:
+        client = None
+        try:
+            client = self.node.create_client(SetWheelPosition, self.service_name)
 
-        client = self.node.create_client(SetWheelPosition, self.service_name)
+            request = SetWheelPosition.Request()
+            request.wheel_id = wheel_id
+            request.position_deg = float(position_deg)
 
-        request = SetWheelPosition.Request()
-        request.wheel_id = wheel_id
-        request.position_deg = float(position_deg)  # Aseguramos el casteo a float
+            response = client.call(request)
 
-        response = client.call(request)
+            return f"Éxito: {response.message}. Posicion angular actual: {response.final_position_deg}"
 
-        if response.success:
-            return f"Éxito: {response.message}. Posicion angular actual: {response.current_rpm}"
-        else:
-            return f"Fallo al ajustar la posicion: {response.message}"
+        except Exception as e:
+            return f"Error crítico al ejecutar la herramienta en ROS 2: {str(e)}"
+
+        finally:
+            if client is not None:
+                self.node.destroy_client(client)
 
     async def _arun(self, *args, **kwargs) -> str:
         raise NotImplementedError("La herramienta no soporta asincronía aún.")
